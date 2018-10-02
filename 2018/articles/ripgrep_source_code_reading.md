@@ -113,3 +113,68 @@ pub fn parse() -> Result<Args> {
 
 `matches.to_args()`で結果を返している。これは`ArgsMatches`の値をバラして、パターンや利用するマッチャを解析してからripgrepの設定の元締めたる`ArgsImp`構造体に包みなおしている。
 
+## `try_main`
+
+> [`try_main`](https://github.com/BurntSushi/ripgrep/blob/0.10.0/src/main.rs#L49-L60)
+
+```
+fn try_main(args: Args) -> Result<bool> {
+    use args::Command::*;
+
+    match args.command()? {
+        Search => search(args),
+        SearchParallel => search_parallel(args),
+        SearchNever => Ok(false),
+        Files => files(args),
+        FilesParallel => files_parallel(args),
+        Types => types(args),
+    }
+}
+```
+
+`Args::parse()`で設定されたコマンドの種類によって処理を振り分けている。まず`search(args)`を読んでみる。
+
+## `search(args: Args) -> Result<bool>`
+
+```rust
+fn search(args: Args) -> Result<bool> {
+    // 現在時刻の取得
+    let started_at = Instant::now();
+    let quit_after_match = args.quit_after_match()?;
+    let subject_builder = args.subject_builder();
+    let mut stats = args.stats()?;
+    let mut searcher = args.search_worker(args.stdout())?;
+    let mut matched = false;
+
+    for result in args.walker()? {
+        let subject = match subject_builder.build_from_result(result) {
+            Some(subject) => subject,
+            None => continue,
+        };
+        let search_result = match searcher.search(&subject) {
+            Ok(search_result) => search_result,
+            Err(err) => {
+                // A broken pipe means graceful termination.
+                if err.kind() == io::ErrorKind::BrokenPipe {
+                    break;
+                }
+                message!("{}: {}", subject.path().display(), err);
+                continue;
+            }
+        };
+        matched = matched || search_result.has_match();
+        if let Some(ref mut stats) = stats {
+            *stats += search_result.stats().unwrap();
+        }
+        if matched && quit_after_match {
+            break;
+        }
+    }
+    if let Some(ref stats) = stats {
+        let elapsed = Instant::now().duration_since(started_at);
+        // We don't care if we couldn't print this successfully.
+        let _ = searcher.print_stats(elapsed, stats);
+    }
+    Ok(matched)
+}
+```
